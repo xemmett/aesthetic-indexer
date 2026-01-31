@@ -1,0 +1,66 @@
+# Aesthetic prompt bank (one per line)
+# Keep prompts sparse and ambiguous; add over time based on retrieval quality.
+night vision
+thermal imaging
+religious ritual
+authority
+military formation
+industrial machinery
+mechanical interior
+empty corridor
+low motion
+high motion
+slow-motion explosion
+fog
+rain
+firelight
+neon lighting
+silhouette
+hard shadows
+documentary footage
+archival film grain
+surveillance footage
+wide landscape
+close-up face
+military industrial complex
+war economy
+weapons manufacturing
+missile launch
+drone warfare
+battlefield
+urban warfare
+desert warfare
+armored vehicles
+fighter jets
+naval fleet
+propaganda
+recruitment footage
+patriotic spectacle
+military ceremony
+press briefing
+political rally
+cable news
+breaking news
+talking heads
+panel debate
+media frenzy
+news ticker
+scrolling headlines
+news loop
+TV static
+digital glitch
+channel surfing
+emergency broadcast
+countdown timer
+culture war
+political outrage
+protest clash
+riot police
+tear gas
+social media feed
+online argument
+doomscrolling
+satellite imagery
+data center
+numbers scrolling
+digital noise
