@@ -12,8 +12,11 @@ __pycache__/
 *.pyzwz
 *.pyzwzw
 *.pyzwzwz
+*.pt
 
 data/
 *.egg-info/
 inputs/
 outputs/
+
+*.pth

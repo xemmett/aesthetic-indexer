@@ -313,8 +313,6 @@ def run_keywords_job(
             if len(items) >= limit:
                 break
         console.print(f"  found {found_this_kw}")
-        if len(items) >= limit:
-            break
 
     if not items:
         console.print("No items found.")

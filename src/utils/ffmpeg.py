@@ -108,36 +108,88 @@ def extract_frames_jpg(
         vf_parts.append(f"scale={scale_width}:-1")
 
     if timestamps is not None:
-        # Extract specific frames by timestamp (each timestamp becomes one output file)
-        outputs: list[Path] = []
-        for i, ts in enumerate(timestamps, start=1):
-            out = output_dir / f"{i:04d}.jpg"
-            try:
-                cmd = [
-                    "ffmpeg",
-                    "-hide_banner",
-                    "-loglevel",
-                    "error",
-                    "-y",
-                    "-ss",
-                    f"{ts:.6f}",
-                    "-i",
-                    str(input_video),
-                    "-frames:v",
-                    "1",
-                ]
-                if vf_parts:
-                    cmd += ["-vf", ",".join(vf_parts)]
-                cmd += [str(out)]
-                _run(cmd)
-                # Only add to outputs if file was actually created
-                if out.exists():
-                    outputs.append(out)
-            except FFmpegError:
-                # Frame extraction failed (e.g., invalid timestamp, corrupted video)
-                # Continue to next frame
-                continue
-        return outputs
+        # Extract all frames in a single ffmpeg pass using select filter
+        timestamp_list = sorted(set(timestamps))  # Sort and deduplicate
+        
+        if not timestamp_list:
+            return []
+        
+        # Build select filter: eq(t,0.5)+eq(t,1.0)+eq(t,2.0)...
+        select_expr = "+".join([f"eq(t,{ts:.6f})" for ts in timestamp_list])
+        
+        # Build video filter chain
+        filter_parts = [f"select='{select_expr}'"]
+        if scale_width:
+            filter_parts.append(f"scale={scale_width}:-1")
+        
+        cmd = [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-i",
+            str(input_video),
+            "-vf",
+            ",".join(filter_parts),
+            "-vsync",
+            "0",  # Don't duplicate frames
+            "-q:v",
+            "2",
+            str(pattern),
+        ]
+        
+        try:
+            _run(cmd)
+            # Frames are extracted in video order (sorted timestamp order)
+            # Output files are numbered 0001.jpg, 0002.jpg, etc.
+            extracted = sorted(output_dir.glob("*.jpg"))
+            if not extracted:
+                # Batch extraction succeeded but no frames - try fallback
+                raise FFmpegError("Batch extraction returned no frames")
+            return extracted
+        except FFmpegError as e:
+            # If batch extraction fails, fall back to individual extractions
+            # (for compatibility with edge cases or problematic videos)
+            outputs: list[Path] = []
+            fallback_vf_parts: list[str] = []
+            if scale_width:
+                fallback_vf_parts.append(f"scale={scale_width}:-1")
+            
+            # Try individual frame extraction as fallback
+            for i, ts in enumerate(timestamps, start=1):
+                out = output_dir / f"{i:04d}.jpg"
+                try:
+                    cmd = [
+                        "ffmpeg",
+                        "-hide_banner",
+                        "-loglevel",
+                        "error",
+                        "-y",
+                        "-ss",
+                        f"{ts:.6f}",
+                        "-i",
+                        str(input_video),
+                        "-frames:v",
+                        "1",
+                    ]
+                    if fallback_vf_parts:
+                        cmd += ["-vf", ",".join(fallback_vf_parts)]
+                    cmd += [str(out)]
+                    _run(cmd)
+                    if out.exists():
+                        outputs.append(out)
+                except FFmpegError:
+                    continue
+            
+            if not outputs:
+                # All fallback attempts failed - raise original error with context
+                raise FFmpegError(
+                    f"Frame extraction failed for {input_video.name}: "
+                    f"batch extraction failed ({str(e)}), "
+                    f"fallback individual extraction also failed for all {len(timestamps)} timestamps"
+                )
+            return outputs
 
     if fps is None:
         fps = 1.0

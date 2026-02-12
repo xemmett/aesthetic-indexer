@@ -15,7 +15,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
-from src.db.models import Clip, ClipEmbedding, ClipSignals, ClipTag
+from src.db.models import Clip, ClipEmbedding, ClipEntity, ClipScene, ClipSignals, ClipTag
 from src.db.session import get_session_factory
 
 app = FastAPI(title="Aesthetic Indexer API")
@@ -81,6 +81,16 @@ class SearchResponse(BaseModel):
     total: int
     page: int
     page_size: int
+
+
+class EntityFacetItem(BaseModel):
+    entity: str
+    count: int
+
+
+class SceneFacetItem(BaseModel):
+    scene: str
+    count: int
 
 
 @app.get("/")
@@ -244,6 +254,200 @@ async def search_semantic(
         
         clip_responses = [ClipResponse(**c) for c in paginated_clips]
         return SearchResponse(clips=clip_responses, total=total, page=page, page_size=page_size)
+
+
+@app.get("/api/clips/search/hybrid", response_model=SearchResponse)
+async def search_hybrid(
+    query: Optional[str] = Query(None, description="Optional text query for CLIP semantic search"),
+    entities: Optional[list[str]] = Query(None, description="Optional entity filters (repeat param)"),
+    scenes: Optional[list[str]] = Query(None, description="Optional Places365 scene filters (repeat param)"),
+    min_entity_confidence: float = Query(0.55, ge=0.0, le=1.0, description="Min entity confidence threshold"),
+    min_scene_confidence: float = Query(0.55, ge=0.0, le=1.0, description="Min scene confidence threshold"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(24, ge=1, le=100),
+    limit: int = Query(200, ge=1, le=1000, description="Max results to consider before pagination"),
+):
+    """
+    Hybrid search:
+      - Optional semantic search using CLIP embeddings (pgvector)
+      - Optional grounded filters using clip_entities / clip_scenes
+
+    This enables queries like:
+      - query="sunny day in the park" + entities=dog
+      - scenes=airport (no semantic query; browse constrained results)
+    """
+    q = (query or "").strip()
+    use_semantic = bool(q)
+
+    # Normalize filters: drop empty strings, lower/trim for consistency.
+    ents = [e.strip().lower() for e in (entities or []) if (e or "").strip()]
+    scs = [s.strip().lower() for s in (scenes or []) if (s or "").strip()]
+
+    SessionLocal = get_session_factory()
+    with SessionLocal() as session:
+        params: dict = {"limit": int(limit)}
+        where_clauses: list[str] = []
+
+        if ents:
+            where_clauses.append(
+                """
+                EXISTS (
+                    SELECT 1
+                    FROM clip_entities ce
+                    WHERE ce.clip_id = c.id
+                      AND lower(ce.entity) = ANY(:entities)
+                      AND ce.confidence >= :min_entity_confidence
+                )
+                """
+            )
+            params["entities"] = ents
+            params["min_entity_confidence"] = float(min_entity_confidence)
+
+        if scs:
+            where_clauses.append(
+                """
+                EXISTS (
+                    SELECT 1
+                    FROM clip_scenes cs
+                    WHERE cs.clip_id = c.id
+                      AND lower(cs.scene) = ANY(:scenes)
+                      AND cs.confidence >= :min_scene_confidence
+                )
+                """
+            )
+            params["scenes"] = scs
+            params["min_scene_confidence"] = float(min_scene_confidence)
+
+        where_sql = ""
+        if where_clauses:
+            where_sql = "WHERE " + " AND ".join(f"({w.strip()})" for w in where_clauses)
+
+        if use_semantic:
+            query_embedding = encode_text_query(q)
+            embedding_list = query_embedding.tolist()
+            embedding_str = "[" + ",".join(str(x) for x in embedding_list) + "]"
+
+            query_sql = text(
+                f"""
+                SELECT c.id, c.source, c.video_id, c.filepath, c.start_time, c.end_time,
+                       c.duration, c.year, c.created_at,
+                       (1 - (e.embedding <=> '{embedding_str}'::vector)) AS similarity_score
+                FROM clip_embeddings e
+                JOIN clips c ON c.id = e.clip_id
+                {where_sql}
+                ORDER BY e.embedding <=> '{embedding_str}'::vector
+                LIMIT :limit
+                """
+            )
+        else:
+            # Filter-only browse (no semantic ordering)
+            query_sql = text(
+                f"""
+                SELECT c.id, c.source, c.video_id, c.filepath, c.start_time, c.end_time,
+                       c.duration, c.year, c.created_at,
+                       NULL::float AS similarity_score
+                FROM clips c
+                {where_sql}
+                ORDER BY c.created_at DESC
+                LIMIT :limit
+                """
+            )
+
+        result = session.execute(query_sql, params)
+
+        all_clips: list[dict] = []
+        for row in result:
+            all_clips.append(
+                {
+                    "id": str(row.id),
+                    "source": row.source,
+                    "video_id": row.video_id,
+                    "filepath": row.filepath,
+                    "start_time": row.start_time,
+                    "end_time": row.end_time,
+                    "duration": row.duration,
+                    "year": row.year,
+                    "created_at": row.created_at.isoformat(),
+                    "similarity_score": float(row.similarity_score) if row.similarity_score is not None else None,
+                }
+            )
+
+        total = len(all_clips)
+
+        offset = (page - 1) * page_size
+        paginated_clips = all_clips[offset : offset + page_size]
+
+        # Load tags and signals for paginated results
+        clip_ids = [c["id"] for c in paginated_clips]
+        if clip_ids:
+            tags_query = select(ClipTag).where(ClipTag.clip_id.in_([uuid.UUID(id) for id in clip_ids]))
+            tags_map: dict[str, list[dict[str, float]]] = {}
+            for tag in session.scalars(tags_query):
+                k = str(tag.clip_id)
+                if k not in tags_map:
+                    tags_map[k] = []
+                tags_map[k].append({tag.tag: tag.similarity_score})
+
+            signals_query = select(ClipSignals).where(ClipSignals.clip_id.in_([uuid.UUID(id) for id in clip_ids]))
+            signals_map = {str(s.clip_id): s for s in session.scalars(signals_query)}
+
+            for clip_dict in paginated_clips:
+                clip_id = clip_dict["id"]
+                clip_dict["tags"] = tags_map.get(clip_id, [])
+                signals = signals_map.get(clip_id)
+                clip_dict["signals"] = (
+                    {
+                        "motion_score": signals.motion_score if signals else None,
+                        "noise_level": signals.noise_level if signals else None,
+                        "silence_ratio": signals.silence_ratio if signals else None,
+                        "brightness_entropy": signals.brightness_entropy if signals else None,
+                    }
+                    if signals
+                    else None
+                )
+
+        clip_responses = [ClipResponse(**c) for c in paginated_clips]
+        return SearchResponse(clips=clip_responses, total=total, page=page, page_size=page_size)
+
+
+@app.get("/api/entities", response_model=list[EntityFacetItem])
+async def list_entities(
+    limit: int = Query(200, ge=1, le=2000),
+    q: Optional[str] = Query(None, description="Optional substring filter"),
+):
+    """List entities (YOLO) with usage counts for autosuggest/faceting."""
+    SessionLocal = get_session_factory()
+    with SessionLocal() as session:
+        stmt = (
+            select(ClipEntity.entity, func.count(ClipEntity.clip_id).label("count"))
+            .group_by(ClipEntity.entity)
+            .order_by(func.count(ClipEntity.clip_id).desc())
+            .limit(limit)
+        )
+        if q and q.strip():
+            stmt = stmt.where(ClipEntity.entity.ilike(f"%{q.strip()}%"))
+        rows = session.execute(stmt).all()
+        return [{"entity": str(ent), "count": int(count)} for ent, count in rows]
+
+
+@app.get("/api/scenes", response_model=list[SceneFacetItem])
+async def list_scenes(
+    limit: int = Query(200, ge=1, le=2000),
+    q: Optional[str] = Query(None, description="Optional substring filter"),
+):
+    """List scenes (Places365) with usage counts for autosuggest/faceting."""
+    SessionLocal = get_session_factory()
+    with SessionLocal() as session:
+        stmt = (
+            select(ClipScene.scene, func.count(ClipScene.clip_id).label("count"))
+            .group_by(ClipScene.scene)
+            .order_by(func.count(ClipScene.clip_id).desc())
+            .limit(limit)
+        )
+        if q and q.strip():
+            stmt = stmt.where(ClipScene.scene.ilike(f"%{q.strip()}%"))
+        rows = session.execute(stmt).all()
+        return [{"scene": str(scene), "count": int(count)} for scene, count in rows]
 
 
 @app.get("/api/clips/search/tags", response_model=SearchResponse)

@@ -8,7 +8,7 @@ import typer
 from rich.console import Console
 from rich.progress import Progress
 
-from src.audio.audio_tagger import analyze_audio
+from src.audio.audio_tagger import AudioTagger
 from src.utils.ffmpeg import extract_audio_wav, ffprobe_info, extract_frames_jpg
 from src.utils.io import read_json, write_json
 from src.utils.paths import data_dir
@@ -79,6 +79,9 @@ def run_job(
     tmp = data_dir() / "signals_tmp"
     tmp.mkdir(parents=True, exist_ok=True)
 
+    # Create reusable audio tagger instance
+    audio_tagger = AudioTagger()
+
     with Progress() as progress:
         task = progress.add_task("Computing", total=len(metas))
         for meta_path in metas:
@@ -135,7 +138,7 @@ def run_job(
                     noise_level = 0.0
                     silence_ratio = 1.0
                 else:
-                    a = analyze_audio(wav_path)
+                    a = audio_tagger.analyze(wav_path)
                     # noise_level proxy: rms * (1 - silence_ratio)
                     noise_level = float(a.rms * (1.0 - a.silence_ratio))
                     silence_ratio = float(a.silence_ratio)

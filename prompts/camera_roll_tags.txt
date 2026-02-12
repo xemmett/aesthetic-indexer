@@ -1,0 +1,97 @@
+### Time / Era
+
+day
+night
+golden hour
+blue hour
+winter
+summer
+past
+transition
+
+### People
+
+self
+friend
+family
+crowd
+stranger
+silhouette
+reflection
+
+### Place
+
+home
+street
+road
+room
+coast
+field
+city
+airport
+
+### Movement
+
+still
+motion
+blur
+walking
+running
+driving
+waiting
+
+### Light
+
+natural light
+low light
+backlit
+harsh light
+soft light
+shadow
+
+### Mood
+
+calm
+chaotic
+lonely
+intimate
+nostalgic
+tense
+quiet
+
+### Texture / Detail
+
+grain
+dust
+water
+glass
+concrete
+fabric
+skin
+
+### Events (generic, non-dated)
+
+celebration
+work
+travel
+meal
+exercise
+weather
+ritual
+
+### Perspective
+
+close-up
+wide
+overhead
+through glass
+mirror
+
+### Technology / Medium
+
+phone photo
+screenshot
+video
+selfie
+timelapse
+low quality

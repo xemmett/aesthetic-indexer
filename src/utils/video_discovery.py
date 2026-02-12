@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,7 +12,7 @@ VIDEO_EXTS = {".mp4", ".mkv", ".mov", ".avi", ".mpeg", ".mpg", ".m4v", ".webm"}
 
 @dataclass(frozen=True)
 class DiscoveredVideo:
-    source: str  # 'archive' | 'youtube'
+    source: str  # 'archive' | 'youtube' | 'local'
     video_id: str
     filepath: Path
     year: Optional[int]
@@ -104,9 +105,56 @@ def discover_youtube_videos(raw_youtube_dir: Path) -> list[DiscoveredVideo]:
     return out
 
 
+def _stable_video_id_from_path(path: Path) -> str:
+    # Stable across runs/machines as long as the resolved absolute path stays the same.
+    p = str(path.resolve()).lower().encode("utf-8", errors="ignore")
+    return hashlib.sha1(p).hexdigest()[:16]
+
+
+def _guess_year_from_path(path: Path) -> Optional[int]:
+    # Very light heuristic: find a 4-digit year in the filename.
+    import re
+
+    m = re.search(r"(18\d{2}|19\d{2}|20\d{2})", path.name)
+    if not m:
+        return None
+    try:
+        return int(m.group(1))
+    except Exception:
+        return None
+
+
+def discover_local_videos(root_dir: Path) -> list[DiscoveredVideo]:
+    """
+    Unstructured mode: recursively finds video files under root_dir.
+    """
+    out: list[DiscoveredVideo] = []
+    if not root_dir.exists():
+        return out
+
+    for video in root_dir.rglob("*"):
+        if not video.is_file() or video.suffix.lower() not in VIDEO_EXTS:
+            continue
+        vid = _stable_video_id_from_path(video)
+        out.append(
+            DiscoveredVideo(
+                source="local",
+                video_id=vid,
+                filepath=video,
+                year=_guess_year_from_path(video),
+                meta={"input_root": str(root_dir.resolve()), "original_path": str(video.resolve())},
+            )
+        )
+    return out
+
+
 def discover_raw_videos(raw_videos_dir: Path) -> list[DiscoveredVideo]:
-    return discover_archive_videos(raw_videos_dir / "archive") + discover_youtube_videos(
-        raw_videos_dir / "youtube"
-    )
+    # If this looks like our structured raw_videos dir, use structured discovery.
+    # Otherwise, treat it as an arbitrary local folder (unstructured mode).
+    if (raw_videos_dir / "archive").exists() or (raw_videos_dir / "youtube").exists():
+        return discover_archive_videos(raw_videos_dir / "archive") + discover_youtube_videos(
+            raw_videos_dir / "youtube"
+        )
+    return discover_local_videos(raw_videos_dir)
 
 

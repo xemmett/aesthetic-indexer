@@ -6,7 +6,7 @@ import typer
 from rich.console import Console
 from rich.progress import Progress
 
-from src.audio.audio_tagger import analyze_audio
+from src.audio.audio_tagger import AudioTagger, AudioTagResult
 from src.utils.ffmpeg import extract_audio_wav
 from src.utils.io import write_json
 from src.utils.paths import data_dir
@@ -41,6 +41,9 @@ def run_job(
     tmp_audio_dir = data_dir() / "audio_tmp"
     tmp_audio_dir.mkdir(parents=True, exist_ok=True)
 
+    # Create reusable audio tagger instance
+    tagger = AudioTagger()
+
     with Progress() as progress:
         task = progress.add_task("Tagging", total=len(clips))
         for clip_path in clips:
@@ -55,10 +58,9 @@ def run_job(
                 wav_path = extract_audio_wav(clip_path, wav, sample_rate=16000, mono=True)
                 if wav_path is None:
                     # Video has no audio stream - create silent audio result
-                    from src.audio.audio_tagger import AudioTagResult
                     res = AudioTagResult(rms=0.0, spectral_centroid=0.0, silence_ratio=1.0, tags={"silence": 1.0})
                 else:
-                    res = analyze_audio(wav_path)
+                    res = tagger.analyze(wav_path)
                 
                 write_json(
                     out_json,

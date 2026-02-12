@@ -51,6 +51,9 @@ def run_job(
     clips = _iter_clips(clips_root)
     console.print(f"[bold]Frame extraction[/bold] clips={len(clips)} -> {frames_root}")
 
+    failed_clips: list[tuple[str, str]] = []  # (clip_id, error_message)
+    skipped_clips: list[str] = []  # clip_ids with invalid duration
+
     with Progress() as progress:
         task = progress.add_task("Extracting", total=len(clips))
         for clip_path in clips:
@@ -63,9 +66,20 @@ def run_job(
                 if any(out_dir.glob("*.jpg")):
                     continue
 
-            info = ffprobe_info(clip_path)
-            duration = info.duration_seconds
-            if duration <= 0:
+            # Check if file exists and is readable
+            if not clip_path.exists():
+                failed_clips.append((clip_id, "Clip file does not exist"))
+                continue
+
+            try:
+                info = ffprobe_info(clip_path)
+                duration = info.duration_seconds
+                if duration <= 0:
+                    skipped_clips.append(clip_id)
+                    console.print(f"[yellow]Skipping[/yellow] {clip_id}: invalid duration ({duration})")
+                    continue
+            except Exception as e:
+                failed_clips.append((clip_id, f"ffprobe failed: {str(e)}"))
                 continue
 
             n = int(max(1, frames_per_clip))
@@ -86,12 +100,37 @@ def run_job(
                     except Exception:
                         pass
 
-            extract_frames_jpg(
-                clip_path,
-                out_dir,
-                timestamps=ts,
-                scale_width=scale_width,
-            )
+            try:
+                extracted = extract_frames_jpg(
+                    clip_path,
+                    out_dir,
+                    timestamps=ts,
+                    scale_width=scale_width,
+                )
+                if not extracted:
+                    failed_clips.append((clip_id, "No frames extracted (ffmpeg returned empty)"))
+            except Exception as e:
+                failed_clips.append((clip_id, f"Frame extraction failed: {str(e)}"))
+                # Clean up empty directory on failure
+                if out_dir.exists() and not any(out_dir.glob("*.jpg")):
+                    try:
+                        out_dir.rmdir()
+                    except Exception:
+                        pass
+
+    # Summary
+    successful = len(clips) - len(failed_clips) - len(skipped_clips)
+    console.print(f"\n[bold]Frame extraction summary:[/bold]")
+    console.print(f"  [green]Successful:[/green] {successful}/{len(clips)}")
+    if skipped_clips:
+        console.print(f"  [yellow]Skipped (invalid duration):[/yellow] {len(skipped_clips)}")
+    if failed_clips:
+        console.print(f"  [red]Failed:[/red] {len(failed_clips)}")
+        console.print(f"\n[dim]Failed clips (showing first 20):[/dim]")
+        for clip_id, error in failed_clips[:20]:
+            console.print(f"  [red]{clip_id}[/red]: {error}")
+        if len(failed_clips) > 20:
+            console.print(f"  ... and {len(failed_clips) - 20} more")
 
 
 if __name__ == "__main__":
